@@ -619,23 +619,32 @@ fn is_private_shot_dir(meta: &std::fs::Metadata) -> bool {
     }
 }
 
-/// Pathless screenshots share one directory per process. Tests that write them hold this lock,
-/// so removing the directory afterwards never races another test's write.
+/// Pathless screenshots share one directory per process. Tests that write them hold this guard,
+/// so no other test writes while it is cleaned up. Dropping it, even while a failed test unwinds,
+/// removes every screenshot file in the directory and then the directory itself.
 #[cfg(test)]
-pub(crate) fn lock_pathless_shots() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+pub(crate) struct PathlessShots {
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
-/// Test cleanup: remove pathless screenshot files, then their directory once it is empty.
 #[cfg(test)]
-pub(crate) fn remove_pathless_shots<P: AsRef<std::path::Path>>(paths: impl IntoIterator<Item = P>) {
-    for path in paths {
-        let path = path.as_ref();
-        let _ = std::fs::remove_file(path);
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::remove_dir(dir);
+pub(crate) fn lock_pathless_shots() -> PathlessShots {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    PathlessShots { _lock: LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) }
+}
+
+#[cfg(test)]
+impl Drop for PathlessShots {
+    fn drop(&mut self) {
+        let Ok(dir) = private_shot_dir() else { return };
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with("cadcraft-shot-") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
         }
+        let _ = std::fs::remove_dir(&dir);
     }
 }
 
@@ -661,8 +670,13 @@ fn save_pathless_screenshot(img: &image::RgbaImage, token: u64) -> std::io::Resu
         let path = dir.join(format!("cadcraft-shot-{token}-{}.png", next_pathless_nonce()));
         match create_private_file(&path) {
             Ok(mut file) => {
-                img.write_to(&mut file, image::ImageFormat::Png).map_err(std::io::Error::other)?;
-                file.flush()?;
+                let written = img.write_to(&mut file, image::ImageFormat::Png).map_err(std::io::Error::other).and_then(|()| file.flush());
+                if let Err(e) = written {
+                    // The reply carries no path on failure, so nobody else could remove the partial file.
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(e);
+                }
                 return Ok(path);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -780,7 +794,6 @@ mod tests {
             let dir_mode = std::fs::metadata(dir).expect("directory metadata").permissions().mode() & 0o777;
             assert_eq!(dir_mode, 0o700, "the screenshot directory is owner-only");
         }
-        remove_pathless_shots([&a, &b]);
     }
 
     /// `create_new` refuses a pre-existing symlink with `AlreadyExists` and leaves the link target unchanged.

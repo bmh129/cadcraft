@@ -192,7 +192,6 @@ fn issued_callbacks_reply_once_with_matching_tokens_and_distinct_pathless_files(
     for path in [&a, &b] {
         assert!(std::fs::read(path).is_ok_and(|bytes| bytes.starts_with(b"\x89PNG\r\n\x1a\n")), "{path}");
     }
-    crate::control::remove_pathless_shots([&a, &b]);
     assert!(app.shots.is_empty());
 }
 
@@ -369,7 +368,6 @@ fn a_discarded_pass_does_not_issue_and_the_settled_pass_does_once() {
     drain(&mut app, &ctx);
     let reply = rx.recv().expect("a reply");
     assert_eq!(reply["ok"], true, "{reply}");
-    crate::control::remove_pathless_shots(reply["result"]["path"].as_str());
 }
 
 /// Issuance re-bases the expected image on the settled pass, so the saved interface zoom
@@ -392,7 +390,6 @@ fn issuance_uses_the_settled_interface_scale_not_the_admission_estimate() {
     drain(&mut app, &ctx);
     let reply = rx.recv().expect("a reply");
     assert_eq!(reply["ok"], true, "{reply}");
-    crate::control::remove_pathless_shots(reply["result"]["path"].as_str());
 }
 
 /// A→B→A: a switch that returns to the same drawing still invalidates the queued request.
@@ -469,5 +466,4 @@ fn a_resize_while_settling_is_absorbed_at_issue() {
     drain(&mut app, &ctx);
     let reply = rx.recv().expect("a reply");
     assert_eq!(reply["ok"], true, "{reply}");
-    crate::control::remove_pathless_shots(reply["result"]["path"].as_str());
 }
